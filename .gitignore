@@ -1,3 +1,5 @@
 test.py
 hashes - original.xlsx
 ~$hashes.xlsx
+.env
+config.json

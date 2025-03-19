@@ -1,15 +1,15 @@
 import os
+import dotenv
 import requests
 import pandas as pd
 import csv
 import time
 from datetime import datetime, timezone
 
-API_KEYS = [
-    "60813ac8842a5083a18fa5850cc4085fd4871a1158c77b78bf7af7e89c1371bc",
-    "6faa0213eefabfc356f44156f81791ec98cc68fdc9b1c277a17dea976f0af88f",
-    "0b8165a081704eae088a9151f2281f8c23673c9e23b754290f644c6a38da78f2"
-]
+dotenv.load_dotenv()
+
+# Read API keys from .env
+API_KEYS = os.getenv("VT_API_KEYS", "").split(",")
 
 CURRENT_KEY_INDEX = 0
 
@@ -33,9 +33,9 @@ hash_column = "Hashes"  # Update if your column has a different name
 # 1 - 15        ✅
 # 15 - 433      ✅
 # 433 - 490     ✅
-# 490 - 1000    ❌
+# 490- 1000     ❌
 # 1500 - 1648   ❌
-hashes = df.iloc[490:1000, 0].dropna().tolist()
+hashes = df.iloc[490:500, 0].dropna().tolist()
 
 # Output CSV file
 output_file = "hash_analysis.csv"
@@ -51,7 +51,9 @@ def convert_time(timestamp):
 # Function to query VirusTotal
 def query_virustotal(file_hash):
     global CURRENT_KEY_INDEX
-    for _ in range(len(API_KEYS)):  # Try all API keys before failing
+    attempts = 0
+
+    while attempts < len(API_KEYS):  # Try all API keys before failing
         api_key = API_KEYS[CURRENT_KEY_INDEX]
         headers = {"x-apikey": api_key}
         
@@ -89,14 +91,20 @@ def query_virustotal(file_hash):
         ]
     
     elif response.status_code == 429:
-            print(f"Rate limit exceeded for API key {api_key}, switching keys...")
+        attempts += 1
+        print(f"Rate limit exceeded for API key {api_key}, switching keys...")
+        if attempts < len(API_KEYS):
             api_key = get_next_api_key()
             time.sleep(3)  # Short delay before retrying
             query_virustotal(file_hash)
+        else:
+            print("All API keys exhausted. Skipping this hash.")
+            return [file_hash] + ["N/A"] * (len(columns) - 1)
 
     else:
         print(f"Error fetching data for {file_hash}")
     
+    print(f"Logging {file_hash} as 'N/A'.")
     return [file_hash] + ["N/A"] * (len(columns) - 1)
 
 
