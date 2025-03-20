@@ -1,4 +1,5 @@
 import os
+import sys
 import dotenv
 import requests
 import pandas as pd
@@ -12,11 +13,11 @@ dotenv.load_dotenv()
 API_KEYS = os.getenv("VT_API_KEYS", "").split(",")
 
 CURRENT_KEY_INDEX = 0
+CURRENT_ATTEMPTS = 0
 
 VT_URL = "https://www.virustotal.com/api/v3/files/{}"
 
 def get_next_api_key():
-    """Switch to the next API key when the rate limit is hit."""
     global CURRENT_KEY_INDEX
     CURRENT_KEY_INDEX = (CURRENT_KEY_INDEX + 1) % len(API_KEYS)
     return API_KEYS[CURRENT_KEY_INDEX]
@@ -24,21 +25,14 @@ def get_next_api_key():
 # Load hashes from Excel file
 input_file = "hashes.xlsx"
 df = pd.read_excel(input_file, header=0, usecols="A")
+hash_column = "Hashes" 
 
-# Ensure the column name is correct (adjust if needed)
-hash_column = "Hashes"  # Update if your column has a different name
+# Hashes to process
+hashes = df.iloc[1:1500, 0].dropna().tolist()
 
-# Set scan range
-# Done with:
-# 1 - 15        ✅
-# 15 - 433      ✅
-# 433 - 490     ✅
-# 490- 1000     ❌
-# 1500 - 1648   ❌
-hashes = df.iloc[490:500, 0].dropna().tolist()
-
-# Output CSV file
 output_file = "hash_analysis.csv"
+
+# Columns for CSV output
 columns = [
     "File_Hash", "Detection_Count", "Hash-MD5", "Hash-SHA1", "Hash-SHA256", "File_Type", "Magic",
     "Creation_Time", "Signature_Date", "First_Seen", "First_Submission", "Last_Submission", "Last_Analysis",
@@ -48,21 +42,35 @@ columns = [
 def convert_time(timestamp):
     return datetime.fromtimestamp(timestamp, timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC') if isinstance(timestamp, int) else "N/A"
 
-# Function to query VirusTotal
 def query_virustotal(file_hash):
     global CURRENT_KEY_INDEX
-    attempts = 0
+    global CURRENT_ATTEMPTS
 
-    while attempts < len(API_KEYS):  # Try all API keys before failing
+    # Try all API Keys before failing
+    for _ in range(len(API_KEYS)): 
         api_key = API_KEYS[CURRENT_KEY_INDEX]
         headers = {"x-apikey": api_key}
         
-        response = requests.get(VT_URL.format(file_hash), headers=headers)
+    # GET url response
+    response = requests.get(VT_URL.format(file_hash), headers=headers)
 
-    if response.status_code == 200:
+    # Exhausted API Key
+    if response.status_code == 429:
+        CURRENT_ATTEMPTS += 1
+        print(f"Rate limit exceeded for API key {api_key}, switching keys...")
+        if CURRENT_ATTEMPTS < len(API_KEYS):
+            api_key = get_next_api_key()
+            time.sleep(3)  # Short delay before retrying
+            print(f"Reprocessing {file_hash} with new API key {api_key}...")
+            query_virustotal(file_hash)
+        else:
+            print("All API keys exhausted. Exiting...")
+            sys.exit(1)
+
+    # Successful response
+    elif response.status_code == 200:
         data = response.json().get("data", {}).get("attributes", {})
-        
-        # Extract relevant fields
+
         hash = file_hash
         detection_count = data.get("last_analysis_stats", {}).get("malicious", 0)
         md5 = data.get("md5", "N/A")
@@ -76,37 +84,24 @@ def query_virustotal(file_hash):
         first_submission = convert_time(data.get("first_submission_date", "N/A"))
         last_submission = convert_time(data.get("last_submission_date", "N/A"))
         last_analysis = convert_time(data.get("last_analysis_date", "N/A"))
-        
+
         # Extract top 3 names (or "N/A" if fewer than 3 names exist)
         names = data.get("names", [])
         name1, name2, name3 = (names + ["N/A"] * 3)[:3]
-        
+
         # Simple verdict
         verdict = "Malicious" if isinstance(detection_count, int) and detection_count > 5 else "Benign"
-        
+
         return [
             hash, detection_count, md5, sha1, sha256, file_type, magic,
             creation_time, signature_date, first_seen, first_submission, last_submission, last_analysis,
             name1, name2, name3, verdict
         ]
-    
-    elif response.status_code == 429:
-        attempts += 1
-        print(f"Rate limit exceeded for API key {api_key}, switching keys...")
-        if attempts < len(API_KEYS):
-            api_key = get_next_api_key()
-            time.sleep(3)  # Short delay before retrying
-            query_virustotal(file_hash)
-        else:
-            print("All API keys exhausted. Skipping this hash.")
-            return [file_hash] + ["N/A"] * (len(columns) - 1)
 
     else:
         print(f"Error fetching data for {file_hash}")
-    
-    print(f"Logging {file_hash} as 'N/A'.")
-    return [file_hash] + ["N/A"] * (len(columns) - 1)
 
+    return [file_hash] + ["N/A"] * (len(columns) - 1)
 
 
 # Check if file exists
